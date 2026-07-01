@@ -1,0 +1,76 @@
+diff --git a/libogc/dvd.c b/libogc/dvd.c
+index d2a2721..1276646 100644
+--- a/libogc/dvd.c
++++ b/libogc/dvd.c
+@@ -494,6 +494,7 @@ static void __dvd_timeouthandler(syswd_t alarm,void *cbarg)
+ {
+ 	dvdcallbacklow cb;
+ 
++	SYS_Report("DVDDBG TIMEOUT currcmd=%02x\n", __dvd_currcmd);
+ 	cb = __dvd_callback;
+ 	__dvd_callback = NULL;
+ 	if(cb) cb(0x0010);
+@@ -911,6 +912,7 @@ static void __dvd_statebusycb(s32 result)
+ 				return;
+ 			}
+ 			if(_diReg[8]) {
++				SYS_Report("DVDDBG write commit IMMBUF=%08x off=%08x txd=%08x -> FATAL\n", _diReg[8], (u32)__dvd_executing->offset, (u32)__dvd_executing->txdsize);
+ 				block = __dvd_executing;
+ 				__dvd_executing = &__dvd_dummycmdblk;
+ 				block->state = DVD_STATE_FATAL_ERROR;
+@@ -3654,7 +3656,10 @@ static bool __gcode_Startup(DISC_INTERFACE *disc)
+ 	DVD_Init();
+ 	DVD_Reset(DVD_RESETNONE);
+ 
+-	if(DVD_Inquiry(&blk, &__dvd_driveinfo) < 0 || __dvd_driveinfo.rel_date != 0x20196c64)
++	s32 dbg_inqres = DVD_Inquiry(&blk, &__dvd_driveinfo);
++	SYS_Report("DVDDBG gcode Startup: inq=%d rel_date=%08x pad1=%02x pad3=%02x\n",
++		dbg_inqres, __dvd_driveinfo.rel_date, __dvd_driveinfo.pad[1], __dvd_driveinfo.pad[3]);
++	if(dbg_inqres < 0 || __dvd_driveinfo.rel_date != 0x20196c64)
+ 		return false;
+ 
+ 	if(__dvd_driveinfo.pad[1] == 'w')
+@@ -3692,8 +3697,10 @@ static bool __gcode_ReadSectors(DISC_INTERFACE *disc,sec_t sector,sec_t numSecto
+ 	if(!SYS_IsDMAAddress(buffer, 32)) return false;
+ 	if(!__dvd_initflag) return false;
+ 
+-	if(DVD_GcodeRead(&blk, buffer, numSectors << 9, sector) < 0)
++	if(DVD_GcodeRead(&blk, buffer, numSectors << 9, sector) < 0) {
++		SYS_Report("DVDDBG GcodeRead sec=%08x n=%u FAILED\n", (u32)sector, (u32)numSectors);
+ 		return false;
++	}
+ 
+ 	return true;
+ }
+@@ -3701,17 +3708,21 @@ static bool __gcode_ReadSectors(DISC_INTERFACE *disc,sec_t sector,sec_t numSecto
+ static bool __gcode_WriteSectors(DISC_INTERFACE *disc,sec_t sector,sec_t numSectors,const void *buffer)
+ {
+ 	dvdcmdblk blk;
+-
+-	if(disc->ioType != DEVICE_TYPE_GAMECUBE_GCODE) return false;
+-	if(!(disc->features & FEATURE_MEDIUM_CANWRITE)) return false;
+-	if((u32)sector != sector) return false;
+-	if((u32)numSectors != numSectors) return false;
+-	if(disc->bytesPerSector != 512) return false;
+-	if(!SYS_IsDMAAddress(buffer, 32)) return false;
+-	if(!__dvd_initflag) return false;
+-
+-	if(DVD_GcodeWrite(&blk, buffer, numSectors, sector) < 0)
++	s32 dbg_ret;
++
++	if(disc->ioType != DEVICE_TYPE_GAMECUBE_GCODE) { SYS_Report("DVDDBG WriteSectors: wrong ioType\n"); return false; }
++	if(!(disc->features & FEATURE_MEDIUM_CANWRITE)) { SYS_Report("DVDDBG WriteSectors: no CANWRITE\n"); return false; }
++	if((u32)sector != sector) { SYS_Report("DVDDBG WriteSectors: sector overflow\n"); return false; }
++	if((u32)numSectors != numSectors) { SYS_Report("DVDDBG WriteSectors: count overflow\n"); return false; }
++	if(disc->bytesPerSector != 512) { SYS_Report("DVDDBG WriteSectors: bytesPerSector=%u\n", disc->bytesPerSector); return false; }
++	if(!SYS_IsDMAAddress(buffer, 32)) { SYS_Report("DVDDBG WriteSectors: buffer %p not DMA-safe\n", buffer); return false; }
++	if(!__dvd_initflag) { SYS_Report("DVDDBG WriteSectors: not initialized\n"); return false; }
++
++	dbg_ret = DVD_GcodeWrite(&blk, buffer, numSectors, sector);
++	if(dbg_ret < 0) {
++		SYS_Report("DVDDBG GcodeWrite sec=%08x n=%u ret=%d\n", (u32)sector, (u32)numSectors, dbg_ret);
+ 		return false;
++	}
+ 
+ 	return true;
+ }
