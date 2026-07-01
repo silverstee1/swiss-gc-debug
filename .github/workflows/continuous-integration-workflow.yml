@@ -39,7 +39,9 @@ jobs:
       working-directory: libogc2
 
     - name: Build Swiss artifacts
-      run: make
+      run: |
+        chmod -R +x buildtools
+        make
       working-directory: swiss
 
     - name: Upload Swiss artifacts
