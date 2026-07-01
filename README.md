@@ -1,76 +1,84 @@
-# Debug Swiss build — gcldr "Failed to Write" instrumentation
+# Swiss
 
-Goal: your RAM dumps show every DI transaction succeeding, yet Swiss reports
-"Failed to Write!" / failed delete. The error code is therefore produced
-host-side, somewhere between FatFs and the DI layer. This build prints the
-exact failing call and its error code to your USB Gecko, alongside the
-print_debug output you already capture.
+[![Build Status](https://github.com/emukidid/swiss-gc/actions/workflows/continuous-integration-workflow.yml/badge.svg)](https://github.com/emukidid/swiss-gc/actions/workflows/continuous-integration-workflow.yml)
 
-Base commits (patches were generated against these):
-  swiss-gc: f79afa3f5fbb9215111544a340f15b89be758d4b
-  libogc2:  efce083023784df25724b8e45801e587acae2a1b
+## Table of Contents
+- [Purpose](#purpose)
+	- [Main Features](#main-features)
+	- [Requirements](#requirements)
+	- [Usage](#usage)
+- [Navigating Swiss](#navigating-swiss)
+	- [Controls](#controls)
+	- [Swiss UI](#swiss-ui)
 
-## Setup (same pattern as the cubiboot harness)
+## Purpose
+Swiss aims to be an all-in-one homebrew utility for the Nintendo GameCube.
 
-1. Fork https://github.com/emukidid/swiss-gc on GitHub.
-2. Clone your fork, then:
+### Main Features
+**Can browse the following devices**
+- SDSC/SDHC/SDXC Cards via [SD Gecko](https://www.gc-forever.com/wiki/index.php?title=SDGecko) or [SD2SP2](https://github.com/Extrems/SD2SP2)
+- DVD±R or original Game Discs via Optical Disc Drive
+- [Qoob Pro](https://www.gc-forever.com/wiki/index.php?title=Qoob) flash memory
+- [USB Gecko](https://www.gc-forever.com/wiki/index.php?title=USBGecko) remote file storage
+- [WASP](https://www.gc-forever.com/wiki/index.php?title=WASP_Fusion) / [Wiikey Fusion](https://www.gc-forever.com/wiki/index.php?title=Wiikey_Fusion)
+- SMB, FTP, FSP via [Broadband Adapter](https://www.gc-forever.com/wiki/index.php?title=Broadband_Adapter), ENC28J60, W5500, W6100 or W6300
+- [WODE Jukebox](https://www.gc-forever.com/wiki/index.php?title=Wii_Optical_Drive_Emulator)
+- [IDE-EXI](https://www.gc-forever.com/wiki/index.php?title=IDE-EXI), M.2 Loader or USB Dolphin
+- Memory Cards
+- [GC Loader](https://www.gc-forever.com/wiki/index.php?title=GCLoader) or CUBEODE
+- [FlippyDrive](https://www.gc-forever.com/wiki/index.php?title=FlippyDrive)
+- [KunaiGC](https://github.com/KunaiGC/KunaiGC) flash memory
+- [FlipperMCE](https://flippermce.github.io/), GCMCE or MemCard PRO GC
 
-       cd swiss-gc
-       git checkout f79afa3f5fbb9215111544a340f15b89be758d4b -b gcldr-debug
-       git apply /path/to/swiss-debug.patch
-       cp /path/to/libogc2-debug.patch .                # workflow applies this to libogc2
-       cp /path/to/continuous-integration-workflow.yml .github/workflows/
-       git add -A && git commit -m "gcldr write debug instrumentation"
-       git push -u origin gcldr-debug
+Note: Most devices are not supported by libogc and only by [libogc2](https://github.com/extremscorner/libogc2).
 
-3. GitHub → your fork → Actions → "Swiss debug build" run → download the
-   `swiss-gc-debug` artifact. Use the DOL/ISO from it exactly as you run
-   Swiss today.
-4. Reproduce: boot debug Swiss with USB Gecko attached, copy the ISO from
-   sda: to gcldr:, let it fail, then delete it. Save the full Gecko log.
-   Grab a picoloader RAM dump afterwards too — pairing the two timelines is
-   the point.
+**Can emulate the following devices**
+- Processor Interface
+- DVD Interface
+	- Optical Disc Drive
+- External Expansion Interface
+	- Broadband Adapter via [ENC28J60](https://www.microchip.com/en-us/product/enc28j60), [W5500](https://wiznet.io/products/ethernet-chips/w5500), [W6100](https://wiznet.io/products/ethernet-chips/w6100) or [W6300](https://wiznet.io/products/ethernet-chips/w6300)
+	- Memory Cards via SD Cards
+- Audio Streaming Interface
 
-## What the prints mean
+**Can provide the following services**
+- Game ID for BlueRetro, FlipperMCE, MemCard PRO GC and PixelFX RetroGEM GC
+- Profile selection for RetroTINK-4K using [ser2net](https://github.com/cminyard/ser2net)
+- Return to loader and environment setup for [libogc2](https://github.com/extremscorner/libogc2) applications
+- Return to loader for older applications using a legacy mechanism
+- [wiiload](https://wiibrew.org/wiki/Wiiload) v0.5 over TCP/IP or USB Gecko
 
-Swiss side (print_debug, same channel as your existing log):
-  DBG writeFile: f_open/... res=N     FatFs FRESULT of the failing call
-  DBG writeFile: f_write len/bw/res   f_write failed or wrote short
-  DBG closeFile / deleteFile res=N    f_close / f_unlink FRESULT
-  DBG disk_read/disk_write ... FAILED the dvm-cache-level sector op failed
-  DBG disk_write: WRPRT! features=X   write REJECTED host-side: the disc
-                                      lost FEATURE_MEDIUM_CANWRITE. No bus
-                                      traffic happens for these -> matches
-                                      your "clean dump, failed UI" signature
-  DBG disk_ioctl: CTRL_SYNC FAILED    the f_sync/f_close cache flush failed
+### Requirements
+- GameCube with controller
+- A [way to boot homebrew](https://www.gc-forever.com/wiki/index.php?title=Booting_homebrew)
 
-libogc2 side (SYS_Report, same Gecko):
-  DVDDBG gcode Startup: inq/rel_date/pad1/pad3
-      printed on every (re)mount. pad1 must be 'w' (0x77) and rel_date
-      0x20196c64 or the drive is treated read-only from then on.
-  DVDDBG WriteSectors: <reason>       which precondition rejected the write
-                                      before anything touched the bus
-  DVDDBG GcodeWrite ... ret=N         the DI write state machine failed
-  DVDDBG write commit IMMBUF=X        drive returned nonzero immediate
-  DVDDBG TIMEOUT currcmd=X            libogc's 10 s alarm fired (currcmd
-                                      0x19 = gcode write, 0x1A = erase,
-                                      0x11/0x12 = gcode read)
-  DVDDBG GcodeRead ... FAILED         a gcode read failed (RMW path)
+### Usage
+1. [Download latest Swiss release](https://github.com/emukidid/swiss-gc/releases/latest) and extract its contents.
+2. Copy the Swiss DOL file found in the DOL folder to the device/medium you are using to boot homebrew.
+3. Launch Swiss, browse your device and load a DOL or GCM!
 
-FatFs FRESULT values: 1=FR_DISK_ERR 2=FR_INT_ERR 3=FR_NOT_READY 4=FR_NO_FILE
-5=FR_NO_PATH 7=FR_DENIED 9=FR_INVALID_OBJECT 10=FR_WRITE_PROTECTED (full
-list in ff.h).
+Note: Specific devices will have specific locations/executable file variants that need to be used, please check the documentation with those devices on where Swiss will need to be placed.
 
-## Reading the result
+## Navigating Swiss
+### Controls
+| Control                       | Action                  |
+| ----------------------------- | ----------------------- |
+| Control Stick or +Control Pad | Navigate through the UI |
+| A Button                      | Select                  |
+| B Button                      | Enter/Exit bottom pane  |
+| X Button                      | Move back up a folder   |
+| Z Button                      | Manage file or folder   |
+| L Button                      | Move up a page          |
+| R Button                      | Move down a page        |
+| Start/Pause                   | Access recent list      |
 
-- "WRPRT! features=..." or "WriteSectors: no CANWRITE" -> a remount's
-  inquiry came back wrong and the disc went read-only. Compare against the
-  "gcode Startup" lines to see which mount cleared it; then the fix is in
-  picoloader's inquiry path under load.
-- "DVDDBG TIMEOUT currcmd=19" -> a real 10 s stall on a write; pair with
-  the picoloader dump's WR-START/WR-DONE gap to see if the card stalled.
-- "f_write res=1 (FR_DISK_ERR)" right after a "disk_read ... FAILED" ->
-  the failure is a read (FAT/cluster chain) inside the write path, not a
-  write at all.
-- "CTRL_SYNC flush FAILED" with all disk_writes OK -> the failure is inside
-  the libdvm cache flush chain.
+### Swiss UI
+- The top heading shows the version number, commit hash, and revision number of Swiss.
+- The left panes show what device you are using.
+- The largest portion is the Swiss file browser, through which you can navigate files and folders. The top of every folder includes a `..` option, and selecting this moves you back up a folder.
+- The bottom pane, from the left:
+	- Device Selection
+	- Global Settings, Network Settings, Global Game Settings, Default Game Settings, and Current Game Settings
+	- System Info, Device Info, Version Info, and Greetings
+	- Return to top of file system
+	- Restart GameCube

@@ -1,0 +1,379 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+#include <gccore.h>
+#include <ogc/exi.h>
+#include <ogc/libversion.h>
+#include <ogc/machine/processor.h>
+#include "deviceHandler.h"
+#include "FrameBufferMagic.h"
+#include "IPLFontWrite.h"
+#include "swiss.h"
+#include "settings.h"
+#include "main.h"
+#include "ata.h"
+#include "exi.h"
+#include "bba.h"
+#include "flippy.h"
+#include "gcloader.h"
+#include "wkf.h"
+
+const float exiSpeeds[] = {
+	27.0f/32.0f,
+	27.0f/16.0f,
+	27.0f/8.0f,
+	27.0f/4.0f,
+	27.0f/2.0f,
+	27.0f/1.0f,
+	54.0f
+};
+
+char topStr[256];
+
+const char* getDeviceInfoString(u32 location) {
+	DEVICEHANDLER_INTERFACE *device = getDeviceByLocation(location);
+	if(device == &__device_mcp_a && deviceHandler_getDeviceAvailable(&__device_card_a)) {
+		device = &__device_card_a;
+	}
+	else if(device == &__device_mcp_b && deviceHandler_getDeviceAvailable(&__device_card_b)) {
+		device = &__device_card_b;
+	}
+	if(location == bba_exists(LOC_ANY)) {
+		s32 exi_speed;
+		if(getExiSpeedByLocation(location, &exi_speed)) {
+			sprintf(topStr, "%.3g MHz %s (%s)", exiSpeeds[exi_speed], getHwNameByLocation(location), bba_address_str());
+		}
+		else {
+			sprintf(topStr, "%s (%s)", getHwNameByLocation(location), bba_address_str());
+		}
+	}
+	else if(device == &__device_aram) {
+		formatBytes(topStr, __io_aram.numberOfSectors * __io_aram.bytesPerSector, 0, false);
+		strcat(topStr, " ");
+		strcat(topStr, device->hwName);
+	}
+	else if(device == &__device_card_a || device == &__device_card_b) {
+		s32 slot, mem_size, sector_size;
+		if(getExiDeviceByLocation(location, &slot, NULL) && CARD_ProbeEx(slot, &mem_size, &sector_size) == CARD_ERROR_READY) {
+			sprintf(topStr, "%s %i", device->hwName, (mem_size << 20 >> 3) / sector_size - 5);
+		}
+		else {
+			strcpy(topStr, device->hwName);
+		}
+	}
+	else if(device == &__device_dvd) {
+		if(swissSettings.hasDVDDrive == 1) {
+			u8* driveVersion = (u8*)DVDDriveInfo;
+			sprintf(topStr,"%s %02X %02X%02X/%02X (%02X)",device->hwName,driveVersion[6],driveVersion[4],driveVersion[5],driveVersion[7],driveVersion[8]);
+		}
+		else {
+			strcpy(topStr, device->hwName);
+		}
+	}
+	else if(device == &__device_flippy) {
+		flippyversion *version = (flippyversion*)DVDDriveInfo->pad;
+		sprintf(topStr, "%s (%u.%u.%u%s)", device->hwName, version->major, version->minor, version->build, version->dirty ? "-dirtyboi" : "");
+
+		if(deviceHandler_getDeviceAvailable(&__device_dvd)) {
+			device = &__device_dvd;
+			strcat(topStr, " + ");
+			strcat(topStr, device->hwName);
+		}
+	}
+	else if(device == &__device_gcloader) {
+		if(gcloaderVersionStr != NULL) {
+			sprintf(topStr, "%s HW%i (%s)", device->hwName, gcloaderHwVersion, gcloaderVersionStr);
+		}
+		else {
+			strcpy(topStr, device->hwName);
+		}
+	}
+	else if(device == &__device_sd_a || device == &__device_sd_b || device == &__device_sd_c) {
+		s32 slot;
+		if(getExiDeviceByLocation(location, &slot, NULL)) {
+			sprintf(topStr, "%.3g MHz %s", exiSpeeds[sdgecko_getSpeed(slot)], device->hwName);
+		}
+		else {
+			strcpy(topStr, device->hwName);
+		}
+	}
+	else if(device == &__device_wkf) {
+		sprintf(topStr, "%s (%s)", device->hwName, wkfGetSerial());
+	}
+	else {
+		strcpy(topStr, getHwNameByLocation(location));
+	}
+	u32 exi_id;
+	if(!strcmp(topStr, "Unknown") && getExiIdByLocation(location, &exi_id)) {
+		sprintf(topStr, "Unknown (0x%08X)", exi_id);
+	}
+	return topStr;
+}
+
+const char* getControllerSocketString(s32 chan) {
+	u32 type;
+	if(PAD_GetType(chan, &type) && PAD_IsBarrel(chan)) {
+		return "Tarukonga controller";
+	}
+	return SI_GetTypeString(type);
+}
+
+uiDrawObj_t * info_draw_page(int page_num) {
+	uiDrawObj_t *container = DrawEmptyBox(20,60, getVideoMode()->fbWidth-20, 420);
+	
+	// System Info (Page 1/5)
+	if(page_num == 0) {
+		DrawAddChild(container, DrawLabel(30, 67, "System Info (1/5):"));
+		// Model
+		DrawAddChild(container, DrawStyledLabel(640/2, 90, (char*)"MODEL", 0.65f, ALIGN_CENTER, defaultColor));
+		if((SYS_GetConsoleType() & SYS_CONSOLE_MASK) == SYS_CONSOLE_DEVELOPMENT) {
+			if(*DVDDeviceCode == 0x8201) {
+				strcpy(topStr, "NPDP-GDEV (GCT-0100)");
+			}
+			else if(*DVDDeviceCode == 0x8200) {
+				strcpy(topStr, "NPDP-GBOX (GCT-0200)");
+			}
+			else {
+				strcpy(topStr, "ArtX Orca");
+			}
+		}
+		else if(!strncmp(IPLInfo, "(C) ", 4)) {
+			if(!strncmp(&IPLInfo[0x55], "TDEV", 4) ||
+				!strncmp(&IPLInfo[0x55], "DEV  Revision 0.1", 0x11)) {
+				strcpy(topStr, "Nintendo GameCube DOT-006");
+			}
+			else if(*DVDDeviceCode == 0x8200) {
+				if(!strncmp(&IPLInfo[0x55], "PAL ", 4)) {
+					strcpy(topStr, "Nintendo GameCube DOT-002P");
+				}
+				else {
+					strcpy(topStr, "Nintendo GameCube DOT-002");
+				}
+			}
+			else if(*DVDDeviceCode == 0x8001) {
+				if(!strncmp(&IPLInfo[0x55], "PAL ", 4)) {
+					strcpy(topStr, "Nintendo GameCube DOT-001P");
+				}
+				else {
+					strcpy(topStr, "Nintendo GameCube DOT-001");
+				}
+			}
+			else if(*DVDDeviceCode == 0x8000 && DVDDriveInfo->pad[1] == 'M') {
+				strcpy(topStr, "Panasonic Q SL-GC10-S");
+			}
+			else if(!strncmp(&IPLInfo[0x55], "PAL  Revision 1.2", 0x11)) {
+				strcpy(topStr, "Nintendo GameCube DOL-101(EUR)");
+			}
+			else if(!strncmp(&IPLInfo[0x55], "NTSC Revision 1.2", 0x11)) {
+				sprintf(topStr, "Nintendo GameCube DOL-101(%s)", getFontEncode() ? "JPN" : "USA");
+			}
+			else if(!strncmp(&IPLInfo[0x55], "MPAL", 4)) {
+				strcpy(topStr, "Nintendo GameCube DOL-002(BRA)");
+			}
+			else if(!strncmp(&IPLInfo[0x55], "PAL ", 4)) {
+				strcpy(topStr, "Nintendo GameCube DOL-001(EUR)");
+			}
+			else {
+				sprintf(topStr, "Nintendo GameCube DOL-001(%s)", getFontEncode() ? "JPN" : "USA");
+			}
+		}
+		else {
+			strcpy(topStr, "Nintendo Wii");
+		}
+		DrawAddChild(container, DrawStyledLabel(640/2, 106, topStr, 0.75f, ALIGN_CENTER, defaultColor));
+		// IPL version string
+		DrawAddChild(container, DrawStyledLabel(640/2, 130, (char*)"IPL VERSION", 0.65f, ALIGN_CENTER, defaultColor));
+		if(!strncmp(IPLInfo, "(C) ", 4)) {
+			if((SYS_GetConsoleType() & SYS_CONSOLE_MASK) == SYS_CONSOLE_RETAIL) {
+				sprintf(topStr, "%.*s", 0x11, IPLInfo[0x55] ? &IPLInfo[0x55] : "NTSC Revision 1.0");
+			}
+			else {
+				sprintf(topStr, "%.*s (%s Mode)", 0x11, IPLInfo[0x55] ? &IPLInfo[0x55] : "DEV  Revision 1.0", swissSettings.sramBoot ? "Production" : "Development");
+			}
+		}
+		else {
+			strcpy(topStr, "Dummy");
+		}
+		DrawAddChild(container, DrawStyledLabel(640/2, 146, topStr, 0.75f, ALIGN_CENTER, defaultColor));
+		
+		DrawAddChild(container, DrawStyledLabel(640/2, 170, (char*)"VIDEO MODE", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 186, getVideoModeString(getVideoMode()), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 210, (char*)"AUDIO", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 226, (char*)(swissSettings.sramStereo ? "Stereo" : "Mono"), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 250, (char*)"LANGUAGE", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 266, (char*)(sramLanguageStr[swissSettings.sramLanguage]), 0.75f, ALIGN_CENTER, defaultColor));
+
+		// GC 00083214, 00083410
+		DrawAddChild(container, DrawStyledLabel(640/2, 290, (char*)"CPU PVR", 0.65f, ALIGN_CENTER, defaultColor));
+		u32 coreMHz = SYS_GetCoreFrequency() / 1000000;
+		u32 pvr = mfpvr();
+		if((pvr & 0xFFFFF000) == 0x00083000) {
+			if((pvr & 0xFEF) == 0x203 || (pvr & 0xFFF) == 0x214) {
+				sprintf(topStr, "%u MHz IBM Gekko DD%X.%Xe", coreMHz, (pvr >> 8) & 0xF, pvr & 0xF);
+			}
+			else {
+				sprintf(topStr, "%u MHz IBM Gekko DD%X.%X", coreMHz, (pvr >> 8) & 0xF, pvr & 0xF);
+			}
+		}
+		else if((pvr & 0xFFFFF000) == 0x00087000) {
+			if((pvr & 0xFFF) == 0x110) {
+				sprintf(topStr, "%u MHz IBM Broadway DD%X.%X%X", coreMHz, (pvr >> 8) & 0xF, pvr & 0xF, (pvr >> 4) & 0xF);
+			}
+			else {
+				sprintf(topStr, "%u MHz IBM Broadway DD%X.%X", coreMHz, (pvr >> 8) & 0xF, pvr & 0xF);
+			}
+		}
+		else {
+			sprintf(topStr, "Unknown (0x%08X)", pvr);
+		}
+		DrawAddChild(container, DrawStyledLabel(640/2, 306, topStr, 0.75f, ALIGN_CENTER, defaultColor));
+		
+		DrawAddChild(container, DrawStyledLabel(640/2, 330, (char*)"CPU ECID", 0.65f, ALIGN_CENTER, defaultColor));
+		sprintf(topStr,"%08X:%08X:%08X:%08X",mfspr(ECID0),mfspr(ECID1),mfspr(ECID2),mfspr(ECID3));
+		DrawAddChild(container, DrawStyledLabel(640/2, 346, topStr, 0.75f, ALIGN_CENTER, defaultColor));
+		
+		DrawAddChild(container, DrawStyledLabel(640/2, 370, (char*)"SYSTEM-ON-CHIP", 0.65f, ALIGN_CENTER, defaultColor));
+		u32 busMHz = SYS_GetBusFrequency() / 1000000;
+		u32 chipId = ((vu32*)0xCC003000)[11];
+		if((chipId & 0xFFFFFFF) == 0x46500B1) {
+			if(is_gamecube()) {
+				sprintf(topStr, "%u MHz ArtX Flipper Rev.%c", busMHz, 'A' + (chipId >> 28));
+			}
+			else {
+				sprintf(topStr, "%u MHz ATI Hollywood", busMHz);
+			}
+		}
+		else {
+			sprintf(topStr, "Unknown (0x%08X)", chipId);
+		}
+		DrawAddChild(container, DrawStyledLabel(640/2, 386, topStr, 0.75f, ALIGN_CENTER, defaultColor));
+	}
+	else if(page_num == 1) {
+		DrawAddChild(container, DrawLabel(30, 67, "Device Info (2/5):"));
+		DrawAddChild(container, DrawStyledLabel(640/2, 90, (char*)"SLOT-A", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 106, getDeviceInfoString(LOC_MEMCARD_SLOT_A), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 130, (char*)"SLOT-B", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 146, getDeviceInfoString(LOC_MEMCARD_SLOT_B), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 170, (char*)"SERIAL PORT 1", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 186, getDeviceInfoString(LOC_SERIAL_PORT_1), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 210, (char*)"SERIAL PORT 2", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 226, getDeviceInfoString(LOC_SERIAL_PORT_2), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 250, (char*)"DVD INTERFACE", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 266, getDeviceInfoString(LOC_DVD_CONNECTOR), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 290, (char*)"HIGH SPEED PORT", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 306, getDeviceInfoString(LOC_HSP), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 330, (char*)"CURRENT DEVICE", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 346, (char*)(devices[DEVICE_CUR] != NULL ? devices[DEVICE_CUR]->deviceName : "None"), 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 370, (char*)"CONFIGURATION DEVICE", 0.65f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 386, (char*)(devices[DEVICE_CONFIG] != NULL ? devices[DEVICE_CONFIG]->deviceName : "None"), 0.75f, ALIGN_CENTER, defaultColor));
+	}
+	else if(page_num == 2) {
+		DrawAddChild(container, DrawLabel(30, 67, "Hotplug Info (3/5):"));
+		DrawAddChild(container, DrawStyledLabel(640/2, 90, (char*)"SLOT-A", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getSlotAString() {
+			return getExiTypeByLocation(LOC_MEMCARD_SLOT_A);
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 106, getSlotAString, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 130, (char*)"SLOT-B", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getSlotBString() {
+			return getExiTypeByLocation(LOC_MEMCARD_SLOT_B);
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 146, getSlotBString, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 170, (char*)"CONTROLLER SOCKET 1", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getControllerSocket1String() {
+			return getControllerSocketString(PAD_CHAN0);
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 186, getControllerSocket1String, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 210, (char*)"CONTROLLER SOCKET 2", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getControllerSocket2String() {
+			return getControllerSocketString(PAD_CHAN1);
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 226, getControllerSocket2String, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 250, (char*)"CONTROLLER SOCKET 3", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getControllerSocket3String() {
+			return getControllerSocketString(PAD_CHAN2);
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 266, getControllerSocket3String, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 290, (char*)"CONTROLLER SOCKET 4", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getControllerSocket4String() {
+			return getControllerSocketString(PAD_CHAN3);
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 306, getControllerSocket4String, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 330, (char*)"PROGRESSIVE VIDEO", 0.65f, ALIGN_CENTER, defaultColor));
+		const char* getProgressiveVideoString() {
+			return getDTVStatus() ? getRawDTVStatus() ? "Enabled" : "Forced" : "Disabled";
+		}
+		DrawAddChild(container, DrawDynamicLabel(640/2, 346, getProgressiveVideoString, 0.75f, ALIGN_CENTER, defaultColor));
+	}
+	else if(page_num == 3) {
+		DrawAddChild(container, DrawLabel(30, 67, "Version Info (4/5):"));
+		DrawAddChild(container, DrawStyledLabel(640/2, 115, "Swiss version 0.6", 1.0f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 140, "by emu_kidid & Extrems, 2026", 0.75f, ALIGN_CENTER, defaultColor));
+		sprintf(topStr, "Commit %s; Revision %s", GIT_COMMIT, GIT_REVISION);
+		DrawAddChild(container, DrawStyledLabel(640/2, 165, topStr, 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 190, "Built with " _V_STRING, 0.64f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 240, "Source/Updates/Issues", 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 264, "github.com/emukidid/swiss-gc", 0.64f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 310, "Web/Support", 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 334, "www.gc-forever.com", 0.64f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 378, "Visit us on IRC at EFnet/#gc-forever", 0.75f, ALIGN_CENTER, defaultColor));
+	}
+	else if(page_num == 4) {
+		DrawAddChild(container, DrawLabel(30, 67, "Greetings (5/5):"));
+		DrawAddChild(container, DrawStyledLabel(640/2, 90, "Current patreon supporters", 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 114, "Borg Number One (a.k.a. Steven Weiser), Roman Antonacci, 8BitMods,", 0.60f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 134, "CastleMania Ryan, Dan Kunz, Fernando Avelino, HakanaiSeishin, Haymose,", 0.60f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 154, "Alex Mitchell, badsector, Jeffrey Pierce, Jon Moon, kevin,", 0.60f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 174, "Kory, Marlon, silversteel, William Fowler", 0.60f, ALIGN_CENTER, defaultColor));
+
+		DrawAddChild(container, DrawStyledLabel(640/2, 210, "Historical Patreon supporters", 0.75f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 234, "meneerbeer, SubElement, KirovAir, Cristofer Cruz,", 0.60f, ALIGN_CENTER, defaultColor));
+		DrawAddChild(container, DrawStyledLabel(640/2, 254, "RamblingOkie, Lindh0lm154, finnyguy, CtPG", 0.60f, ALIGN_CENTER, defaultColor));
+
+		DrawAddChild(container, DrawStyledLabel(640/2, 290, "Extra Greetz: FIX94, megalomaniac, sepp256, novenary", 0.60f, ALIGN_CENTER, defaultColor));
+		
+		DrawAddChild(container, DrawStyledLabel(640/2, 330, "...and a big thanks to YOU, for using Swiss!", 0.75f, ALIGN_CENTER, defaultColor));
+	}
+	if(page_num != 4) {
+		DrawAddChild(container, DrawLabel(530, 410, "\233"));
+	}
+	if(page_num != 0) {
+		DrawAddChild(container, DrawLabel(100, 410, "\213"));
+	}
+	DrawAddChild(container, DrawStyledLabel(640/2, 410, "Press A or B to return", 1.0f, ALIGN_CENTER, defaultColor));
+	return container;
+}
+
+void show_info() {
+	int page = 0;
+	uiDrawObj_t* pagePanel = NULL;
+	while (padsButtonsHeld() & PAD_BUTTON_A){ VIDEO_WaitVSync (); }
+	while(1) {
+		pagePanel = DrawRepublish(pagePanel, info_draw_page(page));
+		while (!((padsButtonsHeld() & PAD_BUTTON_RIGHT) 
+			|| (padsButtonsHeld() & PAD_BUTTON_LEFT) 
+			|| (padsButtonsHeld() & PAD_BUTTON_B)
+			|| (padsButtonsHeld() & PAD_BUTTON_A)
+			|| (padsButtonsHeld() & PADEX_TRIGGER_R)
+			|| (padsButtonsHeld() & PADEX_TRIGGER_L)))
+			{ VIDEO_WaitVSync (); }
+		u32 btns = padsButtonsHeld();
+		if(((btns & PAD_BUTTON_RIGHT) || (btns & PADEX_TRIGGER_R)) && page < 4)
+			page++;
+		if(((btns & PAD_BUTTON_LEFT) || (btns & PADEX_TRIGGER_L)) && page > 0)
+			page--;
+		if((btns & PAD_BUTTON_A) || (btns & PAD_BUTTON_B))
+			break;
+		while ((padsButtonsHeld() & PAD_BUTTON_RIGHT) 
+			|| (padsButtonsHeld() & PAD_BUTTON_LEFT) 
+			|| (padsButtonsHeld() & PAD_BUTTON_B)
+			|| (padsButtonsHeld() & PAD_BUTTON_A)
+			|| (padsButtonsHeld() & PADEX_TRIGGER_R)
+			|| (padsButtonsHeld() & PADEX_TRIGGER_L))
+			{ VIDEO_WaitVSync (); }
+	}
+	DrawDispose(pagePanel);
+	while (padsButtonsHeld() & PAD_BUTTON_A){ VIDEO_WaitVSync (); }
+}

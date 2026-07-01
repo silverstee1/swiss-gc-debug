@@ -1,0 +1,14 @@
+*.d
+*.dol
+*.elf
+*.map
+*.o
+/cube/packer/SDLOADER.BIN
+/cube/patches/disassembly
+/cube/swiss/source/patches/*.bin.s
+/cube/swiss/source/patches/*_bin.h
+/pc/usbgecko/swissserver
+/pc/usbgecko/swissserver.exe
+/swiss_r*
+build
+dist

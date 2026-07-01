@@ -1,0 +1,49 @@
+name: Swiss debug build
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build:
+    name: Build Swiss (gcldr write debug)
+    runs-on: ubuntu-latest
+    container: ghcr.io/extremscorner/libogc2:latest
+
+    steps:
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends -t bookworm-backports 7zip gcc gcc-mingw-w64-i686 libc6-dev libc6-i386 xorriso
+
+    - name: Checkout Swiss (this repo, with swiss-debug.patch already applied)
+      uses: actions/checkout@main
+      with:
+        path: swiss
+        fetch-depth: 0
+        submodules: true
+
+    - name: Checkout libogc2
+      uses: actions/checkout@main
+      with:
+        repository: extremscorner/libogc2
+        ref: efce083023784df25724b8e45801e587acae2a1b
+        path: libogc2
+
+    - name: Patch libogc2 with DVDDBG instrumentation
+      run: git apply ../swiss/libogc2-debug.patch
+      working-directory: libogc2
+
+    - name: Build and install patched libogc2
+      run: |
+        make -j$(nproc)
+        make install
+      working-directory: libogc2
+
+    - name: Build Swiss artifacts
+      run: make
+      working-directory: swiss
+
+    - name: Upload Swiss artifacts
+      uses: actions/upload-artifact@main
+      with:
+        name: swiss-gc-debug
+        path: swiss/swiss_r*/*
